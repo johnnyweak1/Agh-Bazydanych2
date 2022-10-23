@@ -1,0 +1,69 @@
+CREATE EXTENSION postgis;
+
+-- 1. Wyznacz liczbe budynkow polozonych w odleglosci mniejszej niz 1000m od glownych rzek, 
+-- budynki spelniajace to kryterium zapisz do tabeli TableB
+
+-- LICZBA BUDYNKOW
+SELECT COUNT(p.f_codedesc) FROM majrivers as R, popp as P WHERE ST_Distance(R.geom, P.geom) < 1000 
+AND p.f_codedesc = 'Building'
+
+SELECT P.* INTO TableB FROM majrivers as R, popp as P WHERE ST_Distance(R.geom, P.geom) < 1000
+AND p.f_codedesc = 'Building'
+
+DROP TABLE tableb
+
+SELECT * FROM tableb
+
+-- 2. Utwórz tabelę o nazwie airportsNew. Z tabeli airports do zaimportuj nazwy lotnisk, ich
+-- geometrię, a także atrybut elev, reprezentujący wysokość n.p.m.
+-- a) Znajdź lotnisko, które położone jest najbardziej na zachód i najbardziej na wschód.
+-- b) Do tabeli airportsNew dodaj nowy obiekt - lotnisko, które położone jest w punkcie
+-- środkowym drogi pomiędzy lotniskami znalezionymi w punkcie a. Lotnisko nazwij airportB.
+-- Wysokość n.p.m. przyjmij dowolną.
+
+SELECT * FROM airportsnew
+SELECT A.name, A.geom, A.elev INTO airportsNew FROM airports AS A
+
+--  geodezyjny układ współrzędnych prostokątnych płaskich (x – oś pionowa, y – oś pozioma)
+
+-- a)
+-- Najbardziej na wschod
+SELECT *, ST_Y(A.geom) FROM airportsnew as A ORDER BY ST_Y(A.geom) ASC LIMIT 1
+-- Najbardziej na zachod 
+SELECT * , ST_Y(A.geom) FROM airportsnew A ORDER BY ST_Y(A.geom) DESC LIMIT 1
+
+-- b) 
+SELECT ST_LineInterpolatePoint(ST_ShortestLine(ST_Centroid(A.geom), ST_Centroid(B.geom)), 0.50) FROM 
+(SELECT geom FROM airportsnew WHERE name = 'NIKOLSKI AS') AS A, 
+(SELECT geom FROM airportsnew WHERE name = 'NOATAK') AS B
+
+INSERT INTO airportsnew (name, geom, elev)
+VALUES 
+('airportB', (SELECT ST_LineInterpolatePoint(ST_ShortestLine(ST_Centroid(A.geom), ST_Centroid(B.geom)), 0.50) FROM 
+(SELECT geom FROM airportsnew WHERE name = 'NIKOLSKI AS') AS A, 
+(SELECT geom FROM airportsnew WHERE name = 'NOATAK') AS B), 50)
+
+SELECT * FROM airportsnew WHERE name = 'airportB'
+
+-- 3. Wyznacz pole powierzchni obszaru, który oddalony jest mniej niż 1000 jednostek od najkrótszej
+-- linii łączącej jezioro o nazwie ‘Iliamna Lake’ i lotnisko o nazwie „AMBLER”
+
+SELECT ST_Area(ST_Buffer(ST_ShortestLine(A.geom, (SELECT geom FROM airports WHERE name = 'AMBLER')), 1000)) 
+FROM lakes as A WHERE names = 'Iliamna Lake' 
+
+-- 4. . Napisz zapytanie, które zwróci sumaryczne pole powierzchni poligonów reprezentujących
+-- poszczególne typy drzew znajdujących się na obszarze tundry i bagien (swamps).
+
+SELECT * FROM swamp
+SELECT * FROM tundra
+SELECT * FROM trees
+
+-- DRZEWA NA OBSZARZE TUNDRY
+SELECT T.area_km2 FROM trees as T, tundra as Tun WHERE ST_Contains(Tun.geom, T.geom) GROUP BY T.type
+
+-- DRZEWA NA OBSZARZE BAGIEN
+SELECT T.area_km2 FROM trees as T, swamp as S WHERE ST_Contains(S.geom, T.geom)
+
+SELECT SUM(ST_Area(trees.geom)), trees.vegdesc FROM trees, tundra, swamp 
+WHERE ST_Contains(trees.geom,tundra.geom) OR ST_Contains(trees.geom,swamp.geom)
+GROUP BY trees.vegdesc
