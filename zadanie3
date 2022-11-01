@@ -1,0 +1,118 @@
+CREATE EXTENSION postgis;
+
+-- 1. Zaimportuj pliki:
+-- - T2018_KAR_BUILDINGS
+-- - T2019_KAR_BUILDINGS
+
+SELECT * FROM t2018_kar_buildings
+SELECT * FROM t2019_kar_buildings
+
+-- Znajdz budynki, ktore zostaly wybudowane lub
+--  wyremonotowane na przestrzeni roku						   
+SELECT b.* FROM t2019_kar_buildings as b
+FULL JOIN t2018_kar_buildings as a ON a.polygon_id = b.polygon_id
+WHERE a.polygon_id IS NULL
+OR NOT b.geom = a.geom
+
+SELECT b.* INTO changedbuildings FROM t2019_kar_buildings as b
+FULL JOIN t2018_kar_buildings as a ON a.polygon_id = b.polygon_id
+WHERE a.polygon_id IS NULL
+OR NOT b.geom = a.geom
+
+-- 2. Zaimportuj dane: 
+-- - T2018_KAR_POI_TABLE
+-- - T2019_KAR_POI_TABLE
+
+SELECT COUNT(*) FROM t2018_kar_poi_table
+SELECT COUNT(*) FROM t2019_kar_poi_table
+
+-- Znajdz ile nowych POI pojawilo sie w promieniu 500m od wyremontowanych lub wybudowanych budynkow,
+-- z cw1, policz je wg kategorii
+
+-- Nowe budynki
+SELECT * FROM changedbuildings
+
+-- Nowe POI
+SELECT b.* FROM t2018_kar_poi_table as a
+FULL JOIN t2019_kar_poi_table as b ON a.poi_id = b.poi_id
+WHERE a.poi_id IS NULL
+
+-- Bufor wokol nowych budynkow
+SELECT ST_Buffer(a.geom, 500) FROM changedbuildings as a
+
+SELECT x.type, COUNT(x.poi_id) FROM
+	(SELECT b.poi_id, b.type  FROM 
+	(SELECT ST_Buffer(a.geom, 500) FROM changedbuildings as a) as c
+	INNER JOIN
+	(SELECT b.* FROM t2018_kar_poi_table as a
+	FULL JOIN t2019_kar_poi_table as b ON a.poi_id = b.poi_id
+	WHERE a.poi_id IS NULL) as b
+	ON ST_Contains(c.st_buffer, b.geom)
+	GROUP BY b.poi_id, b.type) as x
+GROUP BY x.type
+
+
+-- 3. Utworz tabele o nazwie 'street_reprojected' ktora bedzie zawierac dane z tabeli
+-- T2019_KAR_STREETS przetransformowane do ukladu DHDN.Berlin/Cassini
+
+SELECT * FROM t2019_kar_streets
+
+-- Przyjmuje srid wgs84 bo inaczej nie dziala :(
+UPDATE T2019_KAR_STREETS SET geom = ST_SetSRID(geom, 4326)
+
+SELECT a.gid, a.link_id, a.st_name, a.ref_in_id,
+a.nref_in_id, a.func_class, a.speed_cat, a.fr_speed_l,
+a.to_speed_l, a.dir_travel, ST_Transform(a.geom, 3068) 
+INTO streets_reprojected
+FROM T2019_KAR_STREETS as a
+
+-- 4. Stworz tabele 'input_points' i dodaj do niej dwa rekordy o geometrii punktowej
+
+-- Tworze tabele
+CREATE TABLE input_points (id INT PRIMARY KEY, geom GEOMETRY NOT NULL)
+-- Dodaje wartosci do tabeli
+INSERT INTO input_points VALUES (1, ST_GeomFromText('Point(8.36093 49.03174)'));
+INSERT INTO input_points VALUES (2, ST_GeomFromText('Point(8.39876 49.00644)'));
+-- Przyjmuje srid GPS
+UPDATE input_points SET geom = ST_SetSrid(geom, 4326)
+
+SELECT ST_Srid(a.geom) FROM input_points as a
+
+-- 5. Zaktualizuj dane w tabeli input_points tak, aby punkty te były w układzie wspolrzednych
+-- DHDN.Berlin/Cassini. Wyswietl wspolrzedne za pomoca ST_AsText()
+
+UPDATE input_points SET geom = ST_Transform(geom, 3068)
+SELECT ST_AsText(a.geom) FROM input_points as a
+
+-- 6.  Znajdź wszystkie skrzyżowania, które znajdują się w odległości 200 m od linii zbudowanej
+-- z punktów w tabeli ‘input_points’. Wykorzystaj tabelę T2019_STREET_NODE. Dokonaj
+-- reprojekcji geometrii, aby była zgodna z resztą tabel.
+
+UPDATE t2019_kar_street_node SET geom = ST_SetSrid(geom, 4326)
+UPDATE t2019_kar_street_node SET geom = ST_Transform(geom, 3068)
+
+SELECT * FROM t2019_kar_street_node as b
+WHERE ST_Distance(ST_MakeLine(ARRAY(SELECT a.geom FROM input_points as a)) , b.geom) <= 200
+
+-- 7. Policz jak wiele sklepów sportowych (‘Sporting Goods Store’ - tabela POIs) znajduje się
+--w odległości 300 m od parków (LAND_USE_A).
+
+SELECT COUNT(x) FROM
+	(SELECT b.poi_id FROM 
+	(SELECT ST_Buffer(a.geom, 300) FROM t2019_kar_land_use_a as a WHERE a.type = 'Park (City/County)') as a
+	INNER JOIN
+	(SELECT * FROM t2019_kar_poi_table as a WHERE a.type = 'Sporting Goods Store') as b
+	ON ST_Contains(a.st_buffer, b.geom)
+	GROUP BY b.poi_id) as x
+
+-- 8. Znajdz punkty przeciecia torow kolejowych z (RAILWAYS) z ciekami (WATER LINES). Zapisz znaleziona
+-- geometrie do tabeli o nazwie 'T2019_KAR_BRIDGES'
+
+SELECT * FROM t2019_kar_railways
+SELECT * FROM t2019_kar_water_lines
+
+SELECT ST_Intersection(a.geom, b.geom) INTO T2019_KAR_BRIDGES
+FROM t2019_kar_railways as a, t2019_kar_water_lines as b
+GROUP BY st_intersection
+
+SELECT * FROM T2019_KAR_BRIDGES
